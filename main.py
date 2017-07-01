@@ -1,13 +1,23 @@
-from gru_baseline import GruBaseline
-from mnist_data import training_batches, plot
+import numpy as np
+from sets import Mnist
 
-batches = training_batches()
+from gru_baseline import GruBaseline
+
+
+def plot(image: np.ndarray, label: str) -> None:
+    from matplotlib import pyplot as plt
+    plt.title(f"Label {label}")
+    plt.imshow(image)
+    plt.show()
+
+
+batch_size = 50
 
 baseline = GruBaseline()
 
-baseline.train(batches)
+train, test = Mnist()
 
-images, labels = batches.__next__()
+# for image, label in train.sample(batch_size)[:1]:
+#    plot(image, label)
 
-print(labels)
-plot(images[0], labels[0])
+baseline.train(get_batch=lambda: train.sample(batch_size))
