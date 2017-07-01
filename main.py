@@ -11,13 +11,11 @@ def plot(image: np.ndarray, label: str) -> None:
     plt.show()
 
 
-batch_size = 50
+# for image, label in train.sample(batch_size)[:1]:
+#    plot(image, label)
 
 baseline = GruBaseline()
 
 train, test = Mnist()
 
-# for image, label in train.sample(batch_size)[:1]:
-#    plot(image, label)
-
-baseline.train(get_batch=lambda: train.sample(batch_size))
+baseline.train(train=train, test=test)

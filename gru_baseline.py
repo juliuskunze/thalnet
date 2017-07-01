@@ -1,6 +1,5 @@
 import itertools
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import tensorflow as tf
@@ -34,36 +33,48 @@ class GruBaseline:
 
         self.cross_entropy = tf.reduce_mean(
             tf.nn.softmax_cross_entropy_with_logits(logits=self.logits, labels=label_batch))
-        tf.summary.scalar('Cross entropy', self.cross_entropy)
 
         self.train_op = tf.train.RMSPropOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
 
         correct = tf.equal(tf.arg_max(self.logits, dimension=1), tf.arg_max(label_batch, dimension=1))
         self.accuracy = tf.reduce_mean(tf.cast(correct, dtype=tf.float32))
-        tf.summary.scalar('Accuracy', self.accuracy)
 
-        self.init_op = tf.global_variables_initializer()
+        self.train_cross_entropy_summary = tf.summary.scalar('cross_entropy_train', self.cross_entropy)
+        self.train_accuracy_summary = tf.summary.scalar('accuracy_train', self.accuracy)
+        self.train_summary = tf.summary.merge([self.train_cross_entropy_summary, self.train_accuracy_summary])
 
-        self.merged_summary_op = tf.summary.merge_all()
+        self.test_cross_entropy_summary = tf.summary.scalar('cross_entropy_test', self.cross_entropy)
+        self.test_accuracy_summary = tf.summary.scalar('accuracy_test', self.accuracy)
+        self.test_summary = tf.summary.merge([self.test_cross_entropy_summary, self.test_accuracy_summary])
 
-    def train(self, get_batch: Callable[[], Dataset], log_path: Path = Path.home() / ".tensorboard" / timestamp()):
+        self.init = tf.global_variables_initializer()
+
+    def train(self, train: Dataset, test: Dataset, batch_size: int = 50,
+              log_path: Path = Path.home() / ".tensorboard" / timestamp()):
         session = tf.Session()
 
-        session.run(self.init_op)
+        session.run(self.init)
 
         summary_writer = tf.summary.FileWriter(str(log_path), graph=tf.get_default_graph())
 
-        for batch_index in itertools.count():
-            batch = get_batch()
+        def feed_dict(batch: Dataset) -> dict:
             step_batches = np.swapaxes(batch['data'], 0, 1)
 
-            feed_dict = dict(
+            return dict(
                 [(f"input{step}:0", step_batches[step]) for step in range(self.step_count)] +
                 [("labels:0", batch['target'])])
 
-            _, cross_entropy, accuracy, summary = session.run(
-                [self.train_op, self.cross_entropy, self.accuracy, self.merged_summary_op], feed_dict)
+        for batch_index in itertools.count():
+            _, train_cross_entropy, train_accuracy, train_summary = session.run(
+                [self.train_op, self.cross_entropy, self.accuracy, self.train_summary],
+                feed_dict(train.sample(batch_size)))
 
-            summary_writer.add_summary(summary, batch_index)
+            summary_writer.add_summary(train_summary, batch_index)
 
-            print(f"Batch {batch_index}: {cross_entropy:.3f} cross entropy, accuracy {accuracy:.3f}")
+            test_cross_entropy, test_accuracy, test_summary = session.run(
+                [self.cross_entropy, self.accuracy, self.test_summary], feed_dict(test.sample(batch_size)))
+
+            summary_writer.add_summary(test_summary, batch_index)
+
+            print(
+                f"Batch {batch_index}: train accuracy {train_accuracy:.3f} (cross entropy {train_cross_entropy:.3f}), test accuracy {test_accuracy:.3f} (cross entropy {test_cross_entropy:.3f})")
