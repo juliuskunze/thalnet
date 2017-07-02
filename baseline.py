@@ -31,6 +31,7 @@ class GruModel:
         self.optimize
         self.train_summary
         self.test_summary
+        self.weights_summary
 
     @define_scope
     def input_batches(self):
@@ -81,6 +82,12 @@ class GruModel:
     def test_summary(self):
         return self.summary()
 
+    @define_scope('weights')
+    def weights_summary(self):
+        variables_except_from_optimizer = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='^(?!.*optimize).*$')
+
+        return tf.summary.merge([tf.summary.histogram(v.name, v) for v in variables_except_from_optimizer])
+
     def summary(self):
         test_cross_entropy_summary = tf.summary.scalar(f'cross_entropy', self.cross_entropy)
         test_accuracy_summary = tf.summary.scalar(f'accuracy', self.accuracy)
@@ -112,6 +119,9 @@ class GruModel:
                 [self.cross_entropy, self.accuracy, self.test_summary], feed_dict(test.sample(batch_size)))
 
             summary_writer.add_summary(test_summary, batch_index)
+
+            if batch_index % 100 == 0:
+                summary_writer.add_summary(session.run(self.weights_summary), batch_index)
 
             print(
                 f'Batch {batch_index}: train accuracy {train_accuracy:.3f} (cross entropy {train_cross_entropy:.3f}), test accuracy {test_accuracy:.3f} (cross entropy {test_cross_entropy:.3f})')
