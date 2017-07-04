@@ -1,7 +1,8 @@
+import numpy as np
 import tensorflow as tf
 from lazy import lazy
 
-from tools import define_scope
+from util import define_scope
 
 
 class RnnBaseline:
@@ -23,9 +24,9 @@ class RnnBaseline:
 
     @lazy
     def logits(self):
-        network = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.GRUCell(self.num_hidden) for _ in range(self.num_layers)])
-        network = tf.contrib.rnn.DropoutWrapper(network, output_keep_prob=1 - self.dropout)
-        output, last_state = tf.nn.dynamic_rnn(network, self.data, dtype=tf.float32)
+        stacked = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.GRUCell(self.num_hidden) for _ in range(self.num_layers)])
+        stacked_with_dropout = tf.contrib.rnn.DropoutWrapper(stacked, output_keep_prob=1 - self.dropout)
+        output, last_state = tf.nn.dynamic_rnn(stacked_with_dropout, self.data, dtype=tf.float32)
 
         output = tf.transpose(output, [1, 0, 2])
         last_output = tf.gather(output, int(output.shape[0]) - 1)
@@ -68,3 +69,7 @@ class RnnBaseline:
     @define_scope('test')
     def test_summary(self):
         return self.summary()
+
+    @property
+    def num_parameters(self):
+        return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])

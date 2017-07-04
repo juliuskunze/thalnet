@@ -6,7 +6,7 @@ import tensorflow as tf
 from sets import Mnist, Dataset
 
 from baseline import RnnBaseline
-from tools import timestamp
+from util import timestamp
 
 
 def plot(image: np.ndarray, label: str) -> None:
@@ -28,6 +28,8 @@ def main(batch_size: int = 50, log_path: Path = Path.home() / '.tensorboard' / t
     dropout = tf.placeholder(tf.float32, name='dropout')
 
     model = RnnBaseline(data, target, dropout)
+
+    print(f'{model.num_parameters} parameters')
 
     session = tf.Session()
 
