@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 from sets import Mnist, Dataset
 
-from baseline import RnnBaseline
+from model import SequenceClassifier, ThalNetCell, stacked_rnn_cell
 from util import timestamp
 
 
@@ -27,7 +27,12 @@ def main(batch_size: int = 50, log_path: Path = Path.home() / '.tensorboard' / t
     target = tf.placeholder(tf.float32, [None, num_classes], name='target')
     dropout = tf.placeholder(tf.float32, name='dropout')
 
-    model = RnnBaseline(data, target, dropout)
+    get_thalnet_cell = lambda: ThalNetCell(input_size=row_size, output_size=num_classes, context_input_size=10,
+                                           center_size_per_module=10)
+
+    get_stacked_cell = lambda: stacked_rnn_cell(num_hidden=10)
+
+    model = SequenceClassifier(data, target, dropout, get_rnn_cell=get_stacked_cell)
 
     print(f'{model.num_parameters} parameters')
 
