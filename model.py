@@ -2,22 +2,29 @@ from typing import Optional, Callable
 
 import numpy as np
 import tensorflow as tf
-from lazy import lazy
+import functools
+
+def lazy_property(function):
+    attribute = '_cache_' + function.__name__
+
+    @property
+    @functools.wraps(function)
+    def decorator(self):
+        if not hasattr(self, attribute):
+            setattr(self, attribute, function(self))
+        return getattr(self, attribute)
+
+    return decorator
 
 from util import define_scope, unzip, single
 
-
-def stacked_rnn_cell(num_hidden: int, num_layers=4):
-    return tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell.GRUCell(num_hidden) for _ in range(num_layers)])
-
-
-class SequenceClassifier:
-    def __init__(self, data, target, dropout,
-                 get_rnn_cell: Callable[[], tf.nn.rnn_cell.RNNCell] = stacked_rnn_cell):
-        self.get_rnn_cell = get_rnn_cell
+class MLPClassifier:
+    def __init__(self, data, target, dropout,num_hidden=512, num_layers=2):
         self.data = data
         self.target = target
         self.dropout = dropout
+        self.num_layers = num_layers
+        self.num_hidden = num_hidden
 
         self.prediction
         self.cross_entropy
@@ -27,15 +34,15 @@ class SequenceClassifier:
         self.test_summary
         self.weights_summary
 
-    @lazy
+    @lazy_property
     def rnn(self):
-        rnn_cell_with_dropout = tf.nn.rnn_cell.DropoutWrapper(self.get_rnn_cell(), output_keep_prob=1 - self.dropout)
-        output, last_state = tf.nn.dynamic_rnn(rnn_cell_with_dropout, self.data, dtype=tf.float32)
-        output = tf.transpose(output, [1, 0, 2])
-        last_output = tf.gather(output, int(output.shape[0]) - 1)
-        return last_output
+        lastoutput = self.data
+        for _ in range(self.num_layers):
+            lastoutput = tf.contrib.layers.fully_connected(lastoutput,num_outputs=self.num_hidden,activation_fn=tf.nn.relu)
+        return lastoutput
 
-    @lazy
+
+    @lazy_property
     def logits(self):
         return tf.contrib.layers.fully_connected(self.rnn, num_outputs=int(self.target.shape[1]),
                                                  activation_fn=None)
@@ -50,7 +57,82 @@ class SequenceClassifier:
 
     @define_scope
     def accuracy(self):
-        correct = tf.equal(tf.arg_max(self.logits, dimension=1), tf.arg_max(self.target, dimension=1))
+        correct = tf.equal(tf.argmax(self.logits, axis=1), tf.argmax(self.target, axis=1))
+        return tf.reduce_mean(tf.cast(correct, dtype=tf.float32))
+
+    @define_scope
+    def optimize(self):
+        return tf.train.AdamOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
+
+    @define_scope('weights')
+    def weights_summary(self):
+        variables_except_from_optimizer = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='^(?!.*optimize).*$')
+
+        return tf.summary.merge([tf.summary.histogram(v.name, v) for v in variables_except_from_optimizer])
+
+    def summary(self):
+        test_cross_entropy_summary = tf.summary.scalar(f'cross_entropy', self.cross_entropy)
+        test_accuracy_summary = tf.summary.scalar(f'accuracy', self.accuracy)
+        return tf.summary.merge([test_cross_entropy_summary, test_accuracy_summary])
+
+    @define_scope('train')
+    def train_summary(self):
+        return self.summary()
+
+    @define_scope('test')
+    def test_summary(self):
+        return self.summary()
+
+    @lazy_property
+    def num_parameters(self):
+        return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
+
+
+def stacked_rnn_cell(num_hidden: int, num_layers=4):
+    return tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell.GRUCell(num_hidden) for _ in range(num_layers)])
+
+
+class SequenceClassifier:
+    def __init__(self, data, target, dropout,
+                 get_rnn_cell: Callable[[], tf.nn.rnn_cell.RNNCell]):
+        self.get_rnn_cell = get_rnn_cell
+        self.data = tf.reshape(data,shape=[-1,28,28])
+        self.target = target
+        self.dropout = dropout
+
+        self.prediction
+        self.cross_entropy
+        self.accuracy
+        self.optimize
+        self.train_summary
+        self.test_summary
+        self.weights_summary
+
+    @lazy_property
+    def rnn(self):
+        #rnn_cell_with_dropout = tf.nn.rnn_cell.DropoutWrapper(self.get_rnn_cell(), output_keep_prob=1 - self.dropout)
+        #output, last_state = tf.nn.dynamic_rnn(rnn_cell_with_dropout, self.data, dtype=tf.float32)
+        output, last_state = tf.nn.dynamic_rnn(self.get_rnn_cell(), self.data, dtype=tf.float32)
+        output = tf.transpose(output, [1, 0, 2])
+        last_output = tf.gather(output, int(output.shape[0]) - 1)
+        return last_output
+
+    @lazy_property
+    def logits(self):
+        return tf.contrib.layers.fully_connected(self.rnn, num_outputs=int(self.target.shape[1]),
+                                                 activation_fn=None)
+
+    @define_scope
+    def prediction(self):
+        return tf.nn.softmax(self.logits)
+
+    @define_scope
+    def cross_entropy(self):
+        return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.logits, labels=self.target))
+
+    @define_scope
+    def accuracy(self):
+        correct = tf.equal(tf.argmax(self.logits, axis=1), tf.argmax(self.target, axis=1))
         return tf.reduce_mean(tf.cast(correct, dtype=tf.float32))
 
     @define_scope
@@ -76,7 +158,7 @@ class SequenceClassifier:
     def test_summary(self):
         return self.summary()
 
-    @property
+    @lazy_property
     def num_parameters(self):
         return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
 
@@ -105,8 +187,7 @@ class FfGruModule:
         :return: output, new_center_features, new_module_state
         """
         with tf.variable_scope(self.name):
-            reading_weights = tf.Variable(tf.truncated_normal([self.center_size, self.context_input_size], stddev=0.1),
-                                          name='reading_weights')
+            reading_weights = tf.get_variable('reading_weights',shape=[self.center_size,self.context_input_size],initializer=tf.truncated_normal_initializer(stddev=0.1))
 
             context_input = tf.matmul(center_state, reading_weights)
 
@@ -116,10 +197,10 @@ class FfGruModule:
 
             gru = tf.nn.rnn_cell.GRUCell(self.num_gru_units)
 
-            gru_output, new_module_state = gru(input=inner, state=module_state)
+            gru_output, new_module_state = gru(inputs=inner, state=module_state)
 
             output, center_feature_output = tf.split(gru_output,
-                                                     (self.output_size, self.center_output_size),
+                                                     [self.output_size, self.center_output_size],
                                                      axis=1) if self.output_size else (None, gru_output)
 
         return output, center_feature_output, new_module_state
@@ -138,18 +219,19 @@ class ThalNetCell(tf.nn.rnn_cell.RNNCell):
         self._input_size = input_size
         self._output_size = output_size
         self._center_size = num_modules * center_size_per_module
+        self.center_size_per_module = center_size_per_module
         self._num_modules = num_modules
 
-    @lazy
+    @lazy_property
     def state_size(self):
         return [module.center_output_size for module in self.modules] + \
                [module.num_gru_units for module in self.modules]
 
-    @property
+    @lazy_property
     def output_size(self):
         return self._output_size
 
-    @lazy
+    @lazy_property
     def modules(self):
         return [FfGruModule(center_size=self._center_size,
                             context_input_size=self._context_input_size,
