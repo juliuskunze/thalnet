@@ -137,7 +137,7 @@ class SequenceClassifier:
 
     @define_scope
     def optimize(self):
-        return tf.train.RMSPropOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
+        return tf.train.AdamOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
 
     @define_scope('weights')
     def weights_summary(self):
@@ -182,22 +182,22 @@ class FfGruModule:
 
         self.num_gru_units = self.output_size + self.center_output_size
 
-    def __call__(self, input, center_state, module_state):
+    def __call__(self, inputs, center_state, module_state):
         """
         :return: output, new_center_features, new_module_state
         """
         with tf.variable_scope(self.name):
             reading_weights = tf.get_variable('reading_weights',shape=[self.center_size,self.context_input_size],initializer=tf.truncated_normal_initializer(stddev=0.1))
 
-            context_input = tf.matmul(center_state, reading_weights)
+            context_input = tf.matmul(center_state, tf.clip_by_norm(reading_weights,1.0))
 
-            module_input = tf.concat([input, context_input], axis=1) if self.input_size else context_input
+            inputs = tf.concat([inputs, context_input], axis=1) if self.input_size else context_input
 
-            inner = tf.contrib.layers.fully_connected(module_input, num_outputs=self.output_size)
+            inputs = tf.contrib.layers.fully_connected(inputs, num_outputs=self.center_output_size)
 
             gru = tf.nn.rnn_cell.GRUCell(self.num_gru_units)
 
-            gru_output, new_module_state = gru(inputs=inner, state=module_state)
+            gru_output, new_module_state = gru(inputs=inputs, state=module_state)
 
             output, center_feature_output = tf.split(gru_output,
                                                      [self.output_size, self.center_output_size],
@@ -251,5 +251,5 @@ class ThalNetCell(tf.nn.rnn_cell.RNNCell):
              for module, module_state in zip(self.modules, module_states)])
 
         output = single([o for o in outputs if o is not None])
-
-        return output, new_center_features + new_module_states
+        
+        return output, list((new_center_features + new_module_states))

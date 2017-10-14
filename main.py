@@ -20,7 +20,7 @@ def plot(image: np.ndarray, label: str) -> None:
 #    plot(image, label)
 
 def main(batch_size: int = 100, log_path: Path = Path.home() / 'Desktop/thalnet/tensorboard' / timestamp()):
-    mnist = input_data.read_data_sets('~/Desktop/thalnet/mnist/train/',
+    mnist = input_data.read_data_sets('mnist',
                                     one_hot=True)
     num_classes = 10
     num_rows, row_size = 28,28
@@ -28,17 +28,20 @@ def main(batch_size: int = 100, log_path: Path = Path.home() / 'Desktop/thalnet/
     target = tf.placeholder(tf.float32, [None, num_classes], name='target')
     dropout = tf.placeholder(tf.float32, name='dropout')
 
-    get_thalnet_cell = lambda: ThalNetCell(input_size=row_size, output_size=num_classes, context_input_size=10,
-                                           center_size_per_module=10)
+    get_thalnet_cell = lambda: ThalNetCell(input_size=row_size, output_size=num_classes, context_input_size=32,
+                                           center_size_per_module=32,num_modules=4)
 
-    get_stacked_cell = lambda: stacked_rnn_cell(num_hidden=10,num_layers=4)
+    get_stacked_cell = lambda: stacked_rnn_cell(num_hidden=50,num_layers=4)
 
-    #model = MLPClassifier(data, target, dropout, num_hidden=512)
+    #model = MLPClassifier(data, target, dropout, num_hidden=64)
     #model = SequenceClassifier(data, target, dropout, get_rnn_cell=get_stacked_cell)
     model = SequenceClassifier(data, target, dropout, get_rnn_cell=get_thalnet_cell)
 
     print(f'{model.num_parameters} parameters')
-
+    
+    # reproduce result under 60,000 total parameters for all three models
+    if model.num_parameters > 60000: return
+    
     session = tf.Session()
 
     session.run(tf.global_variables_initializer())
@@ -50,8 +53,9 @@ def main(batch_size: int = 100, log_path: Path = Path.home() / 'Desktop/thalnet/
         if train:
           xs, ys = mnist.train.next_batch(batch_size)
         else:
-          rows = np.random.randint(100,size=batch_size)
-          xs, ys = mnist.test.images[:batch_size,:], mnist.test.labels[:batch_size,:]
+          #rows = np.random.randint(1000,size=batch_size) 
+          #xs, ys = mnist.test.images[:rows,:], mnist.test.labels[:rows,:]
+          xs, ys = mnist.test.images[:1000,:], mnist.test.labels[:1000,:]
         return {'x': xs, 'y': ys}
 
     def feed_dict(batch):
@@ -75,7 +79,7 @@ def main(batch_size: int = 100, log_path: Path = Path.home() / 'Desktop/thalnet/
 
         print(
             f'Batch {batch_index}: train accuracy {train_accuracy:.3f} (cross entropy {train_cross_entropy:.3f}), test accuracy {test_accuracy:.3f} (cross entropy {test_cross_entropy:.3f})')
-        if batch_index == 1000:
+        if batch_index == 2000:
             break
 
 if __name__ == '__main__':
