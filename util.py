@@ -3,6 +3,18 @@ from time import strftime
 
 import tensorflow as tf
 
+# lazy_property: no need for if $ not None logic
+def lazy_property(function):
+    attribute = '_cache_' + function.__name__
+
+    @property
+    @functools.wraps(function)
+    def decorator(self):
+        if not hasattr(self, attribute):
+            setattr(self, attribute, function(self))
+        return getattr(self, attribute)
+
+    return decorator
 
 def timestamp() -> str:
     return strftime('%Y%m%d-%H%M%S')

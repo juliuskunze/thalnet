@@ -3,29 +3,15 @@ from typing import Optional, Callable
 import numpy as np
 import tensorflow as tf
 import functools
+from util import define_scope, unzip, single, lazy_property
 
-def lazy_property(function):
-    attribute = '_cache_' + function.__name__
-
-    @property
-    @functools.wraps(function)
-    def decorator(self):
-        if not hasattr(self, attribute):
-            setattr(self, attribute, function(self))
-        return getattr(self, attribute)
-
-    return decorator
-
-from util import define_scope, unzip, single
-
-class MLPClassifier:
-    def __init__(self, data, target, dropout,num_hidden=512, num_layers=2):
+# Classifier super class
+class Classifier:
+    def __init__(self, data, target, dropout):
         self.data = data
         self.target = target
         self.dropout = dropout
-        self.num_layers = num_layers
-        self.num_hidden = num_hidden
-
+        
         self.prediction
         self.cross_entropy
         self.accuracy
@@ -35,132 +21,87 @@ class MLPClassifier:
         self.weights_summary
 
     @lazy_property
-    def rnn(self):
+    def run(self):
+        raise NotImplementedError("Please Implement this method")
+
+    @lazy_property
+    def logits(self):
+        return tf.contrib.layers.fully_connected(self.run, num_outputs=int(self.target.shape[1]),
+                                                 activation_fn=None)
+
+    @define_scope
+    def prediction(self):
+        return tf.nn.softmax(self.logits)
+
+    @define_scope
+    def cross_entropy(self):
+        return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.logits, labels=self.target))
+
+    @define_scope
+    def accuracy(self):
+        correct = tf.equal(tf.argmax(self.logits, axis=1), tf.argmax(self.target, axis=1))
+        return tf.reduce_mean(tf.cast(correct, dtype=tf.float32))
+
+    @define_scope
+    def optimize(self):
+        return tf.train.AdamOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
+
+    @define_scope('weights')
+    def weights_summary(self):
+        variables_except_from_optimizer = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='^(?!.*optimize).*$')
+
+        return tf.summary.merge([tf.summary.histogram(v.name, v) for v in variables_except_from_optimizer])
+
+    def summary(self):
+        test_cross_entropy_summary = tf.summary.scalar(f'cross_entropy', self.cross_entropy)
+        test_accuracy_summary = tf.summary.scalar(f'accuracy', self.accuracy)
+        return tf.summary.merge([test_cross_entropy_summary, test_accuracy_summary])
+
+    @define_scope('train')
+    def train_summary(self):
+        return self.summary()
+
+    @define_scope('test')
+    def test_summary(self):
+        return self.summary()
+
+    @lazy_property
+    def num_parameters(self):
+        return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
+
+
+class MLPClassifier(Classifier):
+    def __init__(self, data, target, dropout,num_hidden: int,num_layers: int):
+        self.num_layers = num_layers
+        self.num_hidden = num_hidden
+        super().__init__(data, target, dropout)
+               
+    # override run()
+    @lazy_property
+    def run(self):
         lastoutput = self.data
         for _ in range(self.num_layers):
             lastoutput = tf.contrib.layers.fully_connected(lastoutput,num_outputs=self.num_hidden,activation_fn=tf.nn.relu)
         return lastoutput
 
-
-    @lazy_property
-    def logits(self):
-        return tf.contrib.layers.fully_connected(self.rnn, num_outputs=int(self.target.shape[1]),
-                                                 activation_fn=None)
-
-    @define_scope
-    def prediction(self):
-        return tf.nn.softmax(self.logits)
-
-    @define_scope
-    def cross_entropy(self):
-        return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.logits, labels=self.target))
-
-    @define_scope
-    def accuracy(self):
-        correct = tf.equal(tf.argmax(self.logits, axis=1), tf.argmax(self.target, axis=1))
-        return tf.reduce_mean(tf.cast(correct, dtype=tf.float32))
-
-    @define_scope
-    def optimize(self):
-        return tf.train.AdamOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
-
-    @define_scope('weights')
-    def weights_summary(self):
-        variables_except_from_optimizer = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='^(?!.*optimize).*$')
-
-        return tf.summary.merge([tf.summary.histogram(v.name, v) for v in variables_except_from_optimizer])
-
-    def summary(self):
-        test_cross_entropy_summary = tf.summary.scalar(f'cross_entropy', self.cross_entropy)
-        test_accuracy_summary = tf.summary.scalar(f'accuracy', self.accuracy)
-        return tf.summary.merge([test_cross_entropy_summary, test_accuracy_summary])
-
-    @define_scope('train')
-    def train_summary(self):
-        return self.summary()
-
-    @define_scope('test')
-    def test_summary(self):
-        return self.summary()
-
-    @lazy_property
-    def num_parameters(self):
-        return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
-
-
-def stacked_rnn_cell(num_hidden: int, num_layers=4):
-    return tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell.GRUCell(num_hidden) for _ in range(num_layers)])
-
-
-class SequenceClassifier:
+class SequenceClassifier(Classifier):
     def __init__(self, data, target, dropout,
-                 get_rnn_cell: Callable[[], tf.nn.rnn_cell.RNNCell]):
+                 get_rnn_cell: Callable[[], tf.nn.rnn_cell.RNNCell],num_rows,row_size):
         self.get_rnn_cell = get_rnn_cell
-        self.data = tf.reshape(data,shape=[-1,28,28])
-        self.target = target
-        self.dropout = dropout
-
-        self.prediction
-        self.cross_entropy
-        self.accuracy
-        self.optimize
-        self.train_summary
-        self.test_summary
-        self.weights_summary
+        data = tf.reshape(data,shape=[-1,num_rows,row_size])
+        super().__init__(data,target,dropout)
 
     @lazy_property
-    def rnn(self):
-        #rnn_cell_with_dropout = tf.nn.rnn_cell.DropoutWrapper(self.get_rnn_cell(), output_keep_prob=1 - self.dropout)
-        #output, last_state = tf.nn.dynamic_rnn(rnn_cell_with_dropout, self.data, dtype=tf.float32)
-        output, last_state = tf.nn.dynamic_rnn(self.get_rnn_cell(), self.data, dtype=tf.float32)
+    def run(self):
+        rnn_cell_with_dropout = tf.nn.rnn_cell.DropoutWrapper(self.get_rnn_cell(), output_keep_prob=1 - self.dropout)
+        output, last_state = tf.nn.dynamic_rnn(rnn_cell_with_dropout, self.data, dtype=tf.float32)
         output = tf.transpose(output, [1, 0, 2])
         last_output = tf.gather(output, int(output.shape[0]) - 1)
         return last_output
 
-    @lazy_property
-    def logits(self):
-        return tf.contrib.layers.fully_connected(self.rnn, num_outputs=int(self.target.shape[1]),
-                                                 activation_fn=None)
 
-    @define_scope
-    def prediction(self):
-        return tf.nn.softmax(self.logits)
-
-    @define_scope
-    def cross_entropy(self):
-        return tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.logits, labels=self.target))
-
-    @define_scope
-    def accuracy(self):
-        correct = tf.equal(tf.argmax(self.logits, axis=1), tf.argmax(self.target, axis=1))
-        return tf.reduce_mean(tf.cast(correct, dtype=tf.float32))
-
-    @define_scope
-    def optimize(self):
-        return tf.train.AdamOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
-
-    @define_scope('weights')
-    def weights_summary(self):
-        variables_except_from_optimizer = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='^(?!.*optimize).*$')
-
-        return tf.summary.merge([tf.summary.histogram(v.name, v) for v in variables_except_from_optimizer])
-
-    def summary(self):
-        test_cross_entropy_summary = tf.summary.scalar(f'cross_entropy', self.cross_entropy)
-        test_accuracy_summary = tf.summary.scalar(f'accuracy', self.accuracy)
-        return tf.summary.merge([test_cross_entropy_summary, test_accuracy_summary])
-
-    @define_scope('train')
-    def train_summary(self):
-        return self.summary()
-
-    @define_scope('test')
-    def test_summary(self):
-        return self.summary()
-
-    @lazy_property
-    def num_parameters(self):
-        return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
+def GRUCell(num_hidden: int, num_layers=4):
+    return tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell.GRUCell(num_hidden) for _ in range(num_layers)])
 
 
 class FfGruModule:
@@ -213,14 +154,15 @@ class ThalNetCell(tf.nn.rnn_cell.RNNCell):
                  context_input_size: int,
                  center_size_per_module: int,
                  num_modules: int = 4):
-        super().__init__(_reuse=None)
-
         self._context_input_size = context_input_size
         self._input_size = input_size
         self._output_size = output_size
         self._center_size = num_modules * center_size_per_module
         self.center_size_per_module = center_size_per_module
         self._num_modules = num_modules
+        super().__init__(_reuse=None)
+
+        
 
     @lazy_property
     def state_size(self):
