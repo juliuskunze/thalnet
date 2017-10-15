@@ -50,7 +50,7 @@ def main(batch_size: int = 100, log_path: Path = Path.home() / 'Desktop/thalnet/
 
     
     labels = ['MLP-baseline','GRU-baseline','ThalNet-FF-GRU']
-    ys = []
+    ys,zs = [],[]
     for model in models:
         with tf.Session() as session:
             data = tf.placeholder(tf.float32, [None, num_rows*row_size], name='data')
@@ -62,7 +62,8 @@ def main(batch_size: int = 100, log_path: Path = Path.home() / 'Desktop/thalnet/
             if model.num_parameters > 60000:
                 session.close()
                 return
-            y = []
+            y,z = [],[]
+            
             session.run(tf.global_variables_initializer())
             
             for batch_index in itertools.count():
@@ -80,14 +81,16 @@ def main(batch_size: int = 100, log_path: Path = Path.home() / 'Desktop/thalnet/
                     summary_writer.add_summary(test_summary, batch_index)
                     summary_writer.add_summary(session.run(model.weights_summary), batch_index)
                 y.append(test_accuracy)
+                z.append(test_cross_entropy)
                 print(
                     f'Batch {batch_index}: train accuracy {train_accuracy:.3f} (cross entropy {train_cross_entropy:.3f}), test accuracy {test_accuracy:.3f} (cross entropy {test_cross_entropy:.3f})')
                 if batch_index == 2000:
                     ys.append(y)
+                    zs.append(z)
                     break
             session.close()
         tf.reset_default_graph()
-    plot_learning_curve('Sequential Mnist',ys, labels,ylim=(0,1))
+    plot_learning_curve('Sequential Mnist',ys,zs, labels,ylim=(0,1))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

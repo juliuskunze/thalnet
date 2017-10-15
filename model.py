@@ -5,7 +5,9 @@ import tensorflow as tf
 import functools
 from util import define_scope, unzip, single, lazy_property
 
-# Classifier super class
+'''
+    Classifier base class
+'''
 class Classifier:
     def __init__(self, data, target, dropout):
         self.data = data
@@ -69,6 +71,9 @@ class Classifier:
     def num_parameters(self):
         return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
 
+'''
+    Classifier extensions
+'''
 
 class MLPClassifier(Classifier):
     def __init__(self, data, target, dropout,num_hidden: int,num_layers: int):
@@ -96,9 +101,13 @@ class SequenceClassifier(Classifier):
         rnn_cell_with_dropout = tf.nn.rnn_cell.DropoutWrapper(self.get_rnn_cell(), output_keep_prob=1 - self.dropout)
         output, last_state = tf.nn.dynamic_rnn(rnn_cell_with_dropout, self.data, dtype=tf.float32)
         output = tf.transpose(output, [1, 0, 2])
-        last_output = tf.gather(output, int(output.shape[0]) - 1)
+        last_output = tf.nn.embedding_lookup(output, int(output.shape[0])-1)
         return last_output
 
+
+'''
+    RNN extensions
+'''
 
 def GRUCell(num_hidden: int, num_layers=4):
     return tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell.GRUCell(num_hidden) for _ in range(num_layers)])

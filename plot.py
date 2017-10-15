@@ -1,10 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_learning_curve(title,ys, labels,ylim=(0,1)):
+def plot_learning_curve(title,ys,zs,labels,ylim=(0,1)):
     #Generate a simple plot of the test and training learning curve.
 
     plt.figure()
+    plt.subplot(1,2,1)
     plt.title(title)
     C = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
     if ylim is not None:
@@ -17,13 +18,21 @@ def plot_learning_curve(title,ys, labels,ylim=(0,1)):
         if i >= len(C):
             i -= len(C)
         color = C[i]
-        y_mean = np.mean(y)
-        y_std = np.std(y)
-        plt.fill_between(x=list(range(len(y))),y1=y_mean - y_std,
-                         y2=y_mean + y_std, alpha=0.1,
-                         color=color)
-        plt.plot(y_mean, color=color,
+        plt.plot(y, color=color,
                  label=labels[i])
+    plt.subplot(1,2,2)
+    plt.title(title)
+    plt.xlabel("Steps")
+    plt.ylabel("Test CrossEntropy")
+
+    for i in range(len(zs)):
+        z = zs[i]
+        if i >= len(C):
+            i -= len(C)
+        color = C[i]
+        plt.plot(z, color=color,
+                 label=labels[i])
+       
 
     plt.legend(loc="best")
     plt.plot()
