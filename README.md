@@ -16,3 +16,6 @@ All models are under 60,000 total parameters.
 ![](/tensorboard/ThalNet_GRU.png)
 ### ThalNet-FF-GRU
 ![](/tensorboard/ThalNet_FF_GRU.png)
+
+## Oct14th Hang Yu Mnist Learning Curve
+![](Learning_curve.png)
