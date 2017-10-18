@@ -2,23 +2,18 @@ from typing import Optional, Callable
 
 import numpy as np
 import tensorflow as tf
-from lazy import lazy
+import functools
+from util import define_scope, unzip, single, lazy_property
 
-from util import define_scope, unzip, single
-
-
-def stacked_rnn_cell(num_hidden: int, num_layers=4):
-    return tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell.GRUCell(num_hidden) for _ in range(num_layers)])
-
-
-class SequenceClassifier:
-    def __init__(self, data, target, dropout,
-                 get_rnn_cell: Callable[[], tf.nn.rnn_cell.RNNCell] = stacked_rnn_cell):
-        self.get_rnn_cell = get_rnn_cell
+'''
+    Classifier base class
+'''
+class Classifier:
+    def __init__(self, data, target, dropout):
         self.data = data
         self.target = target
         self.dropout = dropout
-
+        
         self.prediction
         self.cross_entropy
         self.accuracy
@@ -27,17 +22,13 @@ class SequenceClassifier:
         self.test_summary
         self.weights_summary
 
-    @lazy
-    def rnn(self):
-        rnn_cell_with_dropout = tf.nn.rnn_cell.DropoutWrapper(self.get_rnn_cell(), output_keep_prob=1 - self.dropout)
-        output, last_state = tf.nn.dynamic_rnn(rnn_cell_with_dropout, self.data, dtype=tf.float32)
-        output = tf.transpose(output, [1, 0, 2])
-        last_output = tf.gather(output, int(output.shape[0]) - 1)
-        return last_output
+    @lazy_property
+    def run(self):
+        raise NotImplementedError("Please Implement this method")
 
-    @lazy
+    @lazy_property
     def logits(self):
-        return tf.contrib.layers.fully_connected(self.rnn, num_outputs=int(self.target.shape[1]),
+        return tf.contrib.layers.fully_connected(self.run, num_outputs=int(self.target.shape[1]),
                                                  activation_fn=None)
 
     @define_scope
@@ -50,12 +41,12 @@ class SequenceClassifier:
 
     @define_scope
     def accuracy(self):
-        correct = tf.equal(tf.arg_max(self.logits, dimension=1), tf.arg_max(self.target, dimension=1))
+        correct = tf.equal(tf.argmax(self.logits, axis=1), tf.argmax(self.target, axis=1))
         return tf.reduce_mean(tf.cast(correct, dtype=tf.float32))
 
     @define_scope
     def optimize(self):
-        return tf.train.RMSPropOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
+        return tf.train.AdamOptimizer(learning_rate=1e-3).minimize(self.cross_entropy)
 
     @define_scope('weights')
     def weights_summary(self):
@@ -76,9 +67,50 @@ class SequenceClassifier:
     def test_summary(self):
         return self.summary()
 
-    @property
+    @lazy_property
     def num_parameters(self):
         return np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
+
+'''
+    Classifier extensions
+'''
+
+class MLPClassifier(Classifier):
+    def __init__(self, data, target, dropout,num_hidden: int,num_layers: int):
+        self.num_layers = num_layers
+        self.num_hidden = num_hidden
+        super().__init__(data, target, dropout)
+               
+    # override run()
+    @lazy_property
+    def run(self):
+        lastoutput = self.data
+        for _ in range(self.num_layers):
+            lastoutput = tf.contrib.layers.fully_connected(lastoutput,num_outputs=self.num_hidden,activation_fn=tf.nn.relu)
+        return lastoutput
+
+class SequenceClassifier(Classifier):
+    def __init__(self, data, target, dropout,
+                 get_rnn_cell: Callable[[], tf.nn.rnn_cell.RNNCell],num_rows,row_size):
+        self.get_rnn_cell = get_rnn_cell
+        data = tf.reshape(data,shape=[-1,num_rows,row_size])
+        super().__init__(data,target,dropout)
+
+    @lazy_property
+    def run(self):
+        rnn_cell_with_dropout = tf.nn.rnn_cell.DropoutWrapper(self.get_rnn_cell(), output_keep_prob=1 - self.dropout)
+        output, last_state = tf.nn.dynamic_rnn(rnn_cell_with_dropout, self.data, dtype=tf.float32)
+        output = tf.transpose(output, [1, 0, 2])
+        last_output = tf.nn.embedding_lookup(output, int(output.shape[0])-1)
+        return last_output
+
+
+'''
+    RNN extensions
+'''
+
+def GRUCell(num_hidden: int, num_layers=4):
+    return tf.nn.rnn_cell.MultiRNNCell([tf.nn.rnn_cell.GRUCell(num_hidden) for _ in range(num_layers)])
 
 
 class FfGruModule:
@@ -100,26 +132,25 @@ class FfGruModule:
 
         self.num_gru_units = self.output_size + self.center_output_size
 
-    def __call__(self, input, center_state, module_state):
+    def __call__(self, inputs, center_state, module_state):
         """
         :return: output, new_center_features, new_module_state
         """
         with tf.variable_scope(self.name):
-            reading_weights = tf.Variable(tf.truncated_normal([self.center_size, self.context_input_size], stddev=0.1),
-                                          name='reading_weights')
+            reading_weights = tf.get_variable('reading_weights',shape=[self.center_size,self.context_input_size],initializer=tf.truncated_normal_initializer(stddev=0.1))
 
-            context_input = tf.matmul(center_state, reading_weights)
+            context_input = tf.matmul(center_state, tf.clip_by_norm(reading_weights,1.0))
 
-            module_input = tf.concat([input, context_input], axis=1) if self.input_size else context_input
+            inputs = tf.concat([inputs, context_input], axis=1) if self.input_size else context_input
 
-            inner = tf.contrib.layers.fully_connected(module_input, num_outputs=self.output_size)
+            inputs = tf.contrib.layers.fully_connected(inputs, num_outputs=self.center_output_size)
 
             gru = tf.nn.rnn_cell.GRUCell(self.num_gru_units)
 
-            gru_output, new_module_state = gru(input=inner, state=module_state)
+            gru_output, new_module_state = gru(inputs=inputs, state=module_state)
 
             output, center_feature_output = tf.split(gru_output,
-                                                     (self.output_size, self.center_output_size),
+                                                     [self.output_size, self.center_output_size],
                                                      axis=1) if self.output_size else (None, gru_output)
 
         return output, center_feature_output, new_module_state
@@ -132,24 +163,26 @@ class ThalNetCell(tf.nn.rnn_cell.RNNCell):
                  context_input_size: int,
                  center_size_per_module: int,
                  num_modules: int = 4):
-        super().__init__(_reuse=None)
-
         self._context_input_size = context_input_size
         self._input_size = input_size
         self._output_size = output_size
         self._center_size = num_modules * center_size_per_module
+        self.center_size_per_module = center_size_per_module
         self._num_modules = num_modules
+        super().__init__(_reuse=None)
 
-    @lazy
+        
+
+    @lazy_property
     def state_size(self):
         return [module.center_output_size for module in self.modules] + \
                [module.num_gru_units for module in self.modules]
 
-    @property
+    @lazy_property
     def output_size(self):
         return self._output_size
 
-    @lazy
+    @lazy_property
     def modules(self):
         return [FfGruModule(center_size=self._center_size,
                             context_input_size=self._context_input_size,
@@ -169,5 +202,5 @@ class ThalNetCell(tf.nn.rnn_cell.RNNCell):
              for module, module_state in zip(self.modules, module_states)])
 
         output = single([o for o in outputs if o is not None])
-
-        return output, new_center_features + new_module_states
+        
+        return output, list((new_center_features + new_module_states))
